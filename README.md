@@ -1,4 +1,4 @@
-# AnCog_mg_repertoire
+# Mountain gorilla gesture form and frequency of use
 
 This is the repository for the paper "The gestural repertoire of Bwindi mountain gorillas" (Authors: Charlotte Grund, Martha M. Robbins, Catherine Hobaiter).
 Video data on mountain gorilla social interactions were collected on 4 different social units living in Bwindi Impenetrable National Park, Uganda for around 8 months in the years 2019-2022. The clip directory can be searched here: https://zenodo.org/records/5600472. Video data were coded following the Gestural Origins coding framework (https://github.com/CharlotteGrund/Gestural_Origins_Coding-methods_paper). For more details on the Gestural Origins coding methods visit: https://doi.org/10.3758/s13428-023-02082-9.
