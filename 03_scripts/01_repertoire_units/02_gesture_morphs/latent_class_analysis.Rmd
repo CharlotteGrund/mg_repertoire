@@ -1,0 +1,646 @@
+---
+title: "Mountain gorilla repertoire construction: variation in gesture action expression (morphs)"
+subtitle: "Latent class analysis (morph detection)" 
+author: "Charlotte Grund"
+date: "`r format(Sys.time(), '%d -%m -%Y')`"
+output:
+  html_document:
+    keep_md: yes
+    highlight: tango
+    number_sections: yes
+    toc: yes
+    toc_depth: 3
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message=FALSE, 
+                      warning=FALSE)
+options(digits=3)
+```
+
+```{r libraries, echo=F}
+
+## Load Packages
+library(tidyverse)
+library(kableExtra)
+library(knitr)
+library(ClusterR)
+library(tibble)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(tidymodels)
+library(embed)
+library(parallel)
+library(doParallel)
+library(purrr)
+library(reshape2)
+library(igraph)
+library(Rfast)
+library(pkgload)
+library(broom)
+library(BayesLCA)
+```
+
+### Read functions
+
+```{r functions}
+# adjusted from Mielke et al. 2024
+source("04_functions/probability_table.R")
+source("04_functions/morph_detection_bayes_cg.R")
+source("04_functions/colnames_to_levels.R")
+# devtools::load_all('~/RProjects/wildminds/R/')
+```
+
+### Set path
+
+```{r paths}
+data_path <- '02_data_clean/'
+```
+
+### Load datasets
+
+```{r read_data, echo = T}
+
+g.mod.clean <- read.csv(paste0(data_path, 'gesture_mod_data_0A.csv'))
+
+```
+
+
+## Cluster Detection Algorithms
+
+## Set cutoff and specify selection
+
+```{r cutoff_overall (morphs/mods), echo = FALSE}
+
+cutoff_overall <- 5 # cutoff for modifiers and morphs
+cutoff_cluster <- 5 # 
+cutoff <- 5
+
+```
+
+```{r file id suffix, echo = T}
+
+# set selection
+sel <- ".mg"
+# suffix for session
+suffix <- paste0("_", cutoff_cluster)
+
+```
+
+```{r modifiers selection, echo = T}
+
+modifiers_selection <-  c(
+  
+  # gesture action
+  "Gesture_record",
+  
+  # modifiers
+  "Body_part",
+  "Contact_recipient",
+  "Repetition",
+  "Lateral_use")
+
+```
+
+### Lumping modifier levels for certain gesture action/ modifier combinations
+
+```{r data set, echo = T}
+
+g.data <- g.mod.clean
+```
+
+#### ~ Body part contact for contact gesture actions
+
+```{r lumping modifier levels, echo=F}
+
+
+# Body part levels
+
+xx <- g.data
+
+xx$Body_part <-
+      ifelse(xx$Body_part == "BackShoulder",
+             'Body',
+             xx$Body_part)
+xx$Body_part <-
+      ifelse(xx$Body_part == "Face",
+             'Head',
+             xx$Body_part)
+
+# Contact recipient levels
+
+extremity <- c('Arm', 'Leg', 
+               'Hand', 'Fist', 
+               'Foot', 'Knuckles', 
+               'Fingers','HandFoot')
+
+torso.back <- c('Back','BackShoulder',
+                'Body', 'Bottom')
+
+torso.front <- c('BodyFront', 'BodyChest')
+
+head <- c('Head', 'Face')
+
+# Extremity
+xx$Contact_recipient <-
+      ifelse((xx$Contact_recipient %in% extremity),
+             'Extremity',
+             xx$Contact_recipient)
+
+# TorsoBack
+xx$Contact_recipient <-
+      ifelse((xx$Contact_recipient %in% torso.back),
+              'TorsoBack',
+              xx$Contact_recipient)
+
+#TorsoFront
+xx$Contact_recipient <-
+      ifelse((xx$Contact_recipient %in% torso.front),
+        yes = 'TorsoFront',
+        no = xx$Contact_recipient)
+
+# Head
+xx$Contact_recipient <-
+      ifelse((xx$Contact_recipient %in% head),
+             'Head',
+             xx$Contact_recipient)
+
+# make "Pull with arm" into Push - coding error, just ca 3 cases or so
+xx$Gesture_record <-
+      ifelse(
+        test = (xx$Gesture_record %in% c('Pull') & xx$Body_part %in% c('Arm')),
+        yes = 'Push',
+        no = xx$Gesture_record
+      )
+
+g.data <- xx
+```
+
+
+```{r dataset modifiers lumped}
+
+write_csv(g.data,file = paste0(data_path, 'g.data', sel, '.csv'))
+g.data.all <- g.data
+
+```
+
+
+### Subsetting to only include the selected modifiers
+```{r g.data selection}
+
+g.data <- g.data %>% 
+  select(all_of(modifiers_selection))
+```
+
+```{r action cutoff}
+### Remove rare gesture actions: cutoff of 10 cases - gesture actions with fewer than 10 cases are removed from the data. Treat those gesture actions as one morph each.
+
+cutoff_action <- 10
+```
+
+```{r ga_excluded for morph detection, echo = FALSE}
+ga_excluded <- g.data %>% filter(Gesture_record %in% 
+           names(g.data$Gesture_record %>% 
+                   table)[g.data$Gesture_record %>% 
+                            table <= 
+                            cutoff_action])
+
+ga_excluded <- ga_excluded %>% filter(Gesture_record %in% 
+           names(g.data$Gesture_record %>% 
+                   table)[g.data$Gesture_record %>% 
+                            table >= 3])
+
+# Gesture actions with <= 10 observations (filtered out)
+table(ga_excluded$Gesture_record)
+
+prob.table.excluded <- probability_table(data = ga_excluded, 
+                                modifiers = colnames(ga_excluded)[-1])
+
+prob.table.excluded <- prob.table.excluded %>%
+        filter(count > 0)
+
+write_csv(ga_excluded,file = paste0(data_path, 'ga_excluded.csv' ))
+
+write_csv(prob.table.excluded,file = paste0(data_path, 'prob.table.excluded',sel,'.csv' ))
+```
+
+```{r remove_rare, echo=FALSE}
+g.data <- 
+  g.data %>% 
+  filter(Gesture_record %in% 
+           names(g.data$Gesture_record %>% 
+                   table)[g.data$Gesture_record %>% 
+                            table >= 
+                            cutoff_action])
+
+# get rid of unclear modifier levels
+g.data <- g.data %>%
+  filter(if_all(c(Gesture_record, Body_part, Contact_recipient,Repetition,Lateral_use), ~ is.na(.) | . != "Unclear"))
+```
+
+### Levels within modifiers
+
+```{r levels within modifiers, echo = T}
+
+unique(g.data$Body_part)
+length(unique(g.data$Body_part))
+unique(g.data$Contact_recipient)
+length(unique(g.data$Contact_recipient))
+unique(g.data$Lateral_use)
+length(unique(g.data$Lateral_use))
+unique(g.data$Repetition)
+length(unique(g.data$Repetition))
+```
+
+
+### Probability table
+```{r prob_table new script, echo = FALSE}
+
+prob.table <- probability_table(data = g.data, 
+                                modifiers = colnames(g.data)[-1])
+
+kable(prob.table %>%
+        filter(count > 0), #%>% 
+        #head(6), 
+      caption = 'Probability table summarising the variation within each gesture action/modifier level', 
+      format = 'html', 
+      row.names = NA,
+      align = "c",
+      booktabs = T) %>% 
+  kable_styling(font_size = 9)
+```
+
+### Gestures without variation
+
+Identify those gesture actions that only ever occur in one specific way, with low variation in any of the modifiers.
+
+```{r one_Way_gestures, echo= FALSE}
+one_way_gestures <- prob.table %>%
+  filter(count > 0) %>% 
+  group_by(gesture_action) %>% 
+  summarise(mean.prob = mean(probability)) %>%
+  ungroup() %>% 
+  filter(mean.prob == 1) %>% 
+  select(gesture_action) %>% 
+  unlist %>% as.vector
+
+print(one_way_gestures)
+```
+
+### Gestures with variation
+
+Data frame that contains only the gesture actions and modifiers with detectable variation.
+
+```{r multiway_gestures, echo=FALSE}
+multi.gestures <- prob.table %>% 
+  filter(count > 0) %>% 
+  filter(!(gesture_action%in%one_way_gestures)) %>% 
+  group_by(gesture_action, modifier) %>% 
+  summarise(mean.prob = mean(probability), .groups = 'keep') %>% 
+  filter(mean.prob != 1) %>% 
+  ungroup() %>% 
+  right_join(prob.table, by = c('gesture_action', 'modifier')) %>% 
+  filter(!is.na(mean.prob)) %>% 
+  filter(count > 0) %>% 
+  select(-mean.prob)
+multi.gestures <- as.data.frame((multi.gestures))
+print(multi.gestures)
+```
+
+
+### Morph compilation
+
+We define usable morphs as those where any combination of modifiers has a probability of 1 (i.e., all cases of that morph have that combination of modifier levels) and a specificity of 1 (i.e., that combination does not ever occur in any other cluster).
+
+## Cluster detection across all gesture actions
+
+```{r gesture_clusters, echo=TRUE, warning=FALSE, cache = FALSE, message=FALSE, include=FALSE}
+
+gesture_clusters <- 
+  lapply(# go through each gesture action independently
+    unique(g.data$Gesture_record),
+    function(y) {
+      print(y)
+      # set action
+      action <- y
+      # set cutoff
+      cutoff.value <- 5 ### check!
+      # select gesture action data
+      ga.data <- g.data %>%
+        filter(Gesture_record == action)
+      
+      # Latent Cluster Analysis of modifiers
+      ga.lca <- 
+        morph_detection_bayes_cg(
+          data = ga.data,
+          modifiers = colnames(ga.data)[-1],
+          gesture_action = colnames(ga.data)[1],
+          plot.action = action,
+          cutoff = cutoff.value
+        )
+      
+      return(clustering = ga.lca)
+    }
+  )
+
+names(gesture_clusters) <- unique(g.data$Gesture_record)
+
+save(gesture_clusters,file = paste0(data_path, 'gesture_clusters', sel, suffix, '.RDA' ))
+```
+
+
+## Explore the morphs
+
+```{r cluster_infos}
+
+# get the cluster info tables
+cluster_infos <- purrr::transpose(gesture_clusters)$cluster.info
+# some gesture actions only have one cluster
+gesture_actions_with_one_cluster <- purrr::transpose(gesture_clusters)$gesture.action[
+  sapply(cluster_infos, 
+         length) == 1] %>% 
+  unlist()
+#remove gesture actions with only one cluster
+cluster_infos <- cluster_infos[sapply(cluster_infos, length) != 1]  
+# make table
+clear_morphs <- do.call(rbind, cluster_infos) %>% 
+  group_by(gesture_action, cluster) %>% 
+  summarise(count = max(count.cluster)) %>% 
+  ungroup() %>% 
+  arrange(gesture_action, cluster) %>% 
+  left_join(
+    do.call(rbind, cluster_infos)  %>% 
+      filter(probability == 1 & specificity == 1) %>% 
+      select(gesture_action, cluster) %>% 
+      distinct(.keep_all = TRUE) %>%
+      mutate(clear.rule = 1)
+  ) %>% 
+  replace_na(list('clear.rule' = 0))
+
+clear_morphs %>% 
+  kable(format = 'html', 
+        row.names = NA,
+        align = "c",
+        booktabs = T, 
+        digits = 2) %>% 
+  kable_styling(font_size = 12)
+
+
+write_csv(clear_morphs,file = paste0(data_path, 'clear_morphs', sel, suffix,'.csv'))
+
+```
+
+For most gesture actions and most morphs, a clear rule is underlying the morph. Overall, `r sum(clear_morphs$clear.rule == 1) + length(gesture_actions_with_one_cluster)` of `r nrow(clear_morphs) + length(gesture_actions_with_one_cluster)` morphs from the `r (clear_morphs %>% distinct(gesture_action) %>% nrow()) + length(gesture_actions_with_one_cluster)` gesture actions are clearly defined by a subset of modifiers. Only `r clear_morphs %>% filter(clear.rule == 0) %>% distinct(gesture_action) %>% nrow()` gesture actions have any unclear morphs. The distribution of 'clear' and 'unclear' morphs is shown below.
+
+```{r distinction.infos, echo=FALSE}
+distinction.infos <- purrr::transpose(gesture_clusters)$distinction.info
+
+distinction.infos[is.na(distinction.infos)] <- 
+  rep(list(data.frame(nr.clusters = 1, 
+                      nr.clusters.distinct = 1, 
+                      nearest.neighbours = 3)), 
+      length(distinction.infos[is.na(distinction.infos)]))
+
+distinction.infos <- distinction.infos %>% 
+  bind_rows() %>% 
+  mutate(gesture_action = sapply(gesture_clusters, function(y) y$gesture.action)) %>% 
+  select(gesture_action, nr.clusters, nr.clusters.distinct) %>% 
+  mutate(nr.clusters.unclear = nr.clusters - nr.clusters.distinct)
+
+distinction.infos %>% 
+  kable(format = 'html', 
+        row.names = NA,
+        align = "c",
+        booktabs = T, 
+        digits = 2) %>% 
+  kable_styling(font_size = 12)
+
+write_csv(distinction.infos, file = paste0(data_path, 'unclear.clear.morph.distribution', sel, suffix,'.csv'))
+```
+
+In many cases, rather than one clear rule making up all the cases of a cluster, multiple combinations are specific to the morph and are combined under the same umbrella (e.g., reaching with your knuckles and your hand). We can use the *additional_rules* function to detect cases where multiple combinations that are highly specific together make up 100% of all cases of a morph.
+
+```{r additional_rules, fig.align='center', fig.width=12, fig.height=8, message=F, echo = FALSE, cache = FALSE}
+
+additional.rules <- additional_rules(clus_sol = gesture_clusters, 
+                                     morphs_nonspec = clear_morphs %>% filter(clear.rule == 0)) 
+
+additional.rules %>% 
+  kable(format = 'html', 
+        row.names = NA,
+        align = "c",
+        booktabs = T, 
+        digits = 2) %>% 
+  kable_styling(font_size = 10)
+  
+write_csv(additional.rules,file = paste0(data_path, 'additional.rules', sel, suffix,'.csv'))
+
+```
+
+The morphs are distributed the following way within the gesture actions:
+
+```{r full.data table, echo=FALSE}
+sapply(purrr::transpose(gesture_clusters)$full.data, function(x) max(x$cluster, na.rm = T)) %>% 
+  unlist(F,F) %>% 
+  table() %>%  
+  t() %>%  
+  data.frame() %>% 
+  select(-Var1) %>% 
+  rename('Number_of_moprhs' = '.',
+         'Count' = 'Freq') %>% 
+  kable(format = 'html', 
+        row.names = NA,
+        align = "c",
+        booktabs = T) %>% 
+  kable_styling(font_size = 9)
+```
+
+## Morphs to keep
+
+The most important rule for morphs should be that within each gesture action, each morph should be defined by one modifier or modifier combination that allows us to assign any case to one morph and one morph only. Here, we check for how many of the morphs this description fits.
+
+```{r clear_morphs, echo=FALSE}
+
+# get the cluster info tables
+cluster_infos <- purrr::transpose(gesture_clusters)$cluster.info
+# some gesture actions only have one cluster
+gesture_actions_with_one_cluster <- purrr::transpose(gesture_clusters)$gesture.action[
+  sapply(cluster_infos, 
+         length) == 1] %>% 
+  unlist()
+#remove gesture actions with only one cluster
+cluster_infos <- cluster_infos[sapply(cluster_infos, length) != 1]  
+# make table
+clear_morphs <- do.call(rbind, cluster_infos) %>% 
+  group_by(gesture_action, cluster) %>% 
+  summarise(count = max(count.cluster)) %>% 
+  ungroup() %>% 
+  arrange(gesture_action, cluster) %>% 
+  left_join(
+    do.call(rbind, cluster_infos)  %>% 
+      filter(probability == 1 & specificity == 1) %>% 
+      select(gesture_action, cluster) %>% 
+      distinct(.keep_all = TRUE) %>%
+      mutate(clear.rule = 1)
+  ) %>% 
+  replace_na(list('clear.rule' = 0))
+
+clear_morphs %>% 
+  kable(format = 'html', 
+        row.names = NA,
+        align = "c",
+        booktabs = T, 
+        digits = 2) %>% 
+  kable_styling(font_size = 12)
+
+```
+
+When we look at the table, we see that only `r clear_morphs %>% filter(clear.rule == 0) %>% nrow()` out of `r nrow(clear_morphs)` morphs are unspecified. In many cases, those are just 'all other' clusters - a category where the clustering algorithm puts combinations that do not fall neatly into any of the other groups. However, for some gesture actions, the situation is more difficult, and the majority of morphs are not defined by one clear rule. One thing to check what to do with these morphs is to check whether there are modifiers and modifier combinations within those gesture actions that could be removed to facilitate the detection of clear patterns (e.g., using the conditionality between modifiers or the entropy approach). A second approach would be to determine whether, despite their not being any modifiers or combinations that perfectly explain a morph, there might be some either/or rules - for example, if a morph is defined perfectly by the signaller using either their hands or their knuckles, and neither of those two ever occurs in any other context, we can still build a replicable rule out of that. Let's check that last point for some of the morphs that were not perfectly specified.
+
+```{r additional.rules, echo=FALSE}
+
+additional.rules <- additional_rules(clus_sol = gesture_clusters, 
+                                     morphs_nonspec = clear_morphs %>% filter(clear.rule == 0)) 
+
+additional.rules %>% 
+  kable(format = 'html', 
+        row.names = NA,
+        align = "c",
+        booktabs = T, 
+        digits = 2) %>% 
+  kable_styling(font_size = 10)
+
+```
+
+There are some additional rules in this - currently, `r additional.rules %>% distinct(gesture_action, cluster) %>% nrow()` additional morphs can be specified this way, usually because there are some rare cases that are classed together because most of the modifiers are otherwise the same. That would leave `r nrow(clear_morphs %>% filter(clear.rule == 0)) - additional.rules %>% distinct(gesture_action, cluster) %>% nrow()` for which no clear pattern is currently available.
+
+```{r morph_rules, echo=FALSE, include = FALSE}
+
+# create data frame that has each morph, their count, and the possible modifiers
+morph_rules <- cluster_infos %>%
+  bind_rows() %>%
+  group_by(gesture_action, cluster) %>%
+  summarise(count = max(count.cluster)) %>%
+  ungroup() %>%
+  arrange(gesture_action, cluster) %>%
+  mutate(
+    Body_part = NA,
+    Contact_recipient = NA,
+    Repetition = NA,
+    Lateral_use = NA,
+    rule_complexity = 0,
+    to_check = 0
+  ) %>%
+  suppressMessages()
+
+# go through every morph, check whether they are determined by anything
+for (i in seq_along(morph_rules$gesture_action)) {
+  # select only modifier levels with perfect probability/specificity
+  mods <- cluster_infos %>%
+    bind_rows() %>%
+    filter(
+      gesture_action == morph_rules$gesture_action[i] &
+        cluster == morph_rules$cluster[i] &
+        probability == 1 &
+        specificity == 1
+    )
+  
+  # if none exist check additional rules
+  if (nrow(mods) == 0) {
+    mods <- additional.rules %>%
+      filter(
+        gesture_action == morph_rules$gesture_action[i] &
+          cluster == morph_rules$cluster[i] &
+          specificity == 1
+      )
+  }
+  
+  # if something exists now, add it
+  if (nrow(mods) > 0) {
+    # take only simplest rule
+    mods <- mods %>%
+      filter(nr.rules == min(nr.rules))
+    
+    # extract info from 'modifier' column
+    mod_levels <-
+      str_split(str_split(mods$modifier, pattern = ':') %>% unlist()
+                ,
+                pattern = '\\.')
+    
+    # add information to table (can have multiple rules)
+    for (j in 1:length(mod_levels)) {
+      morph_rules[i, mod_levels[[j]][1]] =
+        paste(morph_rules[i, mod_levels[[j]][1]],
+              mod_levels[[j]][2], sep = ', ')
+    }
+    morph_rules$rule_complexity[i] = mods$nr.rules %>%
+      min()
+  }
+  
+  if (nrow(mods) == 0) {
+    morph_rules$to_check[i] = 1
+    morph_rules$rule_complexity[i] = 0
+  }
+  
+}
+
+# go through each modifier and remove double-bookings and weird NAs
+modifiers = c(
+  'Body_part',
+  'Contact_recipient',
+  'Repetition',
+  'Lateral_use')
+
+for (i in modifiers) {
+  morph_rules[, i] =
+    sapply(morph_rules[, i] %>%
+             unlist(), function(x) {
+               if (is.na(x)) {
+                 return(NA)
+               }
+               str_split(x, pattern = ', ') %>%
+                 unlist(F, F) %>%
+                 unique() %>%
+                 setdiff('NA') %>%
+                 str_c(collapse = '|')
+             }) %>% unlist(F, F)
+  
+}
+
+# add all gesture actions that had only 1 morph or were removed throughout the pipeline
+morph_rules_added <-
+  g.data.all %>% ##### was data.lumped
+  group_by(Gesture_record) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  filter(!(Gesture_record %in% morph_rules$gesture_action)) %>%
+  rename('gesture_action' = 'Gesture_record') %>%
+  mutate(
+    cluster = 1,
+    Body_part = NA,
+    Contact_recipient = NA,
+    Repetition = NA,
+    Lateral_use = NA,
+    rule_complexity = 0,
+    to_check = 0
+  )
+
+morph_rules <- bind_rows(morph_rules,
+                         morph_rules_added) %>%
+  arrange(gesture_action,
+          cluster) %>% 
+  unite(morph_name, gesture_action, cluster, sep = '.', remove = FALSE)
+
+morph_rules <- morph_rules %>% filter (count >=3)
+
+write_csv(morph_rules,file = paste0(data_path, 'morph_rules', sel, suffix, '.csv' ))
+
+```
+
+The final morph table is created in a different script.
